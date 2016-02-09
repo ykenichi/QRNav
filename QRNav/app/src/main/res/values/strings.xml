@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">QR Navigation</string>
+    <string name="action_settings">Settings</string>
+    <string name="action_text">Please scan a QR Code</string>
+    <string name="action_scan">Scan QR Code</string>
+    <string name="image_text">Scanned QR Code</string>
+</resources>
