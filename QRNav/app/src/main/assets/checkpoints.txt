@@ -1,0 +1,4 @@
+floor_1_code_1 1 701 184 Help_Desk
+floor_2_code_1 2 1336 93 Library_Entrance
+floor_2_code_2 2 1134 217 Rotunda
+floor_2_code_3 2 348 703 Cafeteria
