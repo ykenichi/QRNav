@@ -6,7 +6,10 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
+import android.graphics.Matrix;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Point;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Vibrator;
@@ -18,6 +21,7 @@ import android.view.View.OnClickListener;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.widget.Button;
+import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -28,18 +32,24 @@ import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
-import it.sephiroth.android.library.imagezoom.ImageViewTouch;
-import it.sephiroth.android.library.imagezoom.ImageViewTouchBase;
+import uk.co.senab.photoview.PhotoViewAttacher;
 
 public class MainActivity extends AppCompatActivity implements OnClickListener {
 
     // Initialize global variables
     private static final String TAG = "QRNavigation";
     private Button scanButton, mapButtonNext, mapButtonPrev;
-    private TextView floorTxt, locationTxt;
+    private TextView floorTxt, locationTxt, destTxt;
     private Toast toastError, toastSuccess;
-    private ImageViewTouch floorMap;
+    private ImageView floorMap;
+    private PhotoViewAttacher fAttacher;
     private int[] imgArray;
     private ArrayList<Bitmap> floors = new ArrayList<>();
     private ArrayList<String> qrCodes = new ArrayList<>();
@@ -47,9 +57,18 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     private ArrayList<Integer> xCoords = new ArrayList<>();
     private ArrayList<Integer> yCoords = new ArrayList<>();
     private ArrayList<String> Locations = new ArrayList<>();
+    private ArrayList<Integer> NodeIdx = new ArrayList<>();
+    private ArrayList<DijkstraAlgorithm> floorGraph = new ArrayList<>();
+    private ArrayList<ArrayList<Vertex>> nodeArray = new ArrayList<>();
+    private ArrayList<ArrayList<Point>> nodePoints = new ArrayList<>();
     private int lastScan = -1;
     private int curMap = 0;
     private Vibrator vibrate;
+    private int tappedCode = -1;
+    private int tappedCodePrev = -2;
+    private boolean samePoint, isMatch = false;
+    private int x_tap,y_tap;
+    private Matrix prevZoom;
 
     /*
     onCreate - This function is called at the program start. Some of our global variables and our UI elements are initialized here.
@@ -70,16 +89,17 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         mapButtonPrev = (Button)findViewById(R.id.map_button_prev);
         floorTxt = (TextView)findViewById(R.id.current_floor);
         locationTxt = (TextView)findViewById(R.id.scan_content);
-        floorMap = (ImageViewTouch)findViewById(R.id.map);
-        floorMap.setDisplayType(ImageViewTouchBase.DisplayType.FIT_TO_SCREEN);
+        destTxt = (TextView)findViewById(R.id.destination_text);
+        floorMap = (ImageView)findViewById(R.id.map);
+        fAttacher = new PhotoViewAttacher(floorMap);
 
         // Declare error and success Toasts we use to display whether or not the scan was successful.
         toastError = Toast.makeText(getApplicationContext(), "QR code was unsuccessfully scanned", Toast.LENGTH_SHORT);
         toastSuccess = Toast.makeText(getApplicationContext(), "QR code was successfully scanned!", Toast.LENGTH_SHORT);
 
         // Get an array of IDs that correspond to each floorplan bitmap in the drawable folder (the name of the drawable is the filename w/o the extension)
-        imgArray = new int[] {R.drawable.floor_1, R.drawable.floor_2, R.drawable.floor_3, R.drawable.floor_4,
-                R.drawable.floor_5, R.drawable.floor_6, R.drawable.floor_7, R.drawable.floor_8};
+        imgArray = new int[] {R.drawable.floor_1c, R.drawable.floor_2b, R.drawable.floor_3b, R.drawable.floor_4c,
+                R.drawable.floor_5a, R.drawable.floor_6a, R.drawable.floor_7c, R.drawable.floor_8c};
 
         // Load all of the checkpoint (QR code) data from the checkpoints.txt file in the assets folder.
         loadCheckpoints();
@@ -87,14 +107,20 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         // Set our custom ImageViewTouch element to display the current map element and mark the maps.
         markMaps();
 
+        loadNodeCoords();
+
+        loadGraphs();
+
         // Set a listener to both the scan and map buttons. When a button is clicked, it will call the onClick function with the view corresponding to that button.
         scanButton.setOnClickListener(this);
         mapButtonNext.setOnClickListener(this);
         mapButtonPrev.setOnClickListener(this);
+        fAttacher.setOnPhotoTapListener(new PhotoTapListener());
 
         // Set floorTxt with the current floor value (should be 1 at the start of the app). Also set the location text.
         floorTxt.setText("NAC Building Floor " + (curMap + 1));
         locationTxt.setText("Please scan a QR code");
+        destTxt.setText("Destination: None");
     }
 
     /*
@@ -105,10 +131,12 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     private void loadFloors(){
         // Create a bitmap array to hold each floorplan image.
         floors.clear();
+        prevZoom = fAttacher.getDisplayMatrix();
         for(int i = 0; i < imgArray.length; i++){
             floors.add(BitmapFactory.decodeResource(getResources(),imgArray[i]).copy(Bitmap.Config.ARGB_8888, true));
         }
         floorMap.setImageBitmap(floors.get(curMap));
+        fAttacher.update();
     }
 
     /*
@@ -140,7 +168,9 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 xCoords.add(Integer.parseInt(temp_strs[2]));
                 yCoords.add(Integer.parseInt(temp_strs[3]));
                 Locations.add(temp_strs[4]);
+                NodeIdx.add(Integer.parseInt(temp_strs[5]));
             }
+            br.close();
             Log.i(TAG, "Finished parsing checkpoints.txt");
         }
         // This catch statement is executed in the case where checkpoints.txt cannot be opened
@@ -148,6 +178,71 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             e.printStackTrace();
             Log.e(TAG, "Error opening checkpoints.txt");
         }
+    }
+
+    private void loadNodeCoords(){
+        for(int floor = 1; floor < 3; floor++) {
+            try {
+                BufferedReader br = new BufferedReader(new InputStreamReader(getAssets().open("floor_" + floor + "_nodelist.txt")));
+                String str;
+                ArrayList<Point> temp_arraylist = new ArrayList<>();
+                while ((str = br.readLine()) != null) {
+                    String[] temp_strs = str.split(" ");
+                    temp_arraylist.add(new Point(Integer.parseInt(temp_strs[1]), Integer.parseInt(temp_strs[2])));
+                }
+                nodePoints.add(temp_arraylist);
+                br.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+                Log.e(TAG, "Error loading node list for floor " + floor);
+            }
+        }
+        Log.i(TAG, "Finished loading node list for all floors!");
+    }
+
+    private void loadGraphs(){
+        for(int floor = 1; floor < 3; floor++) {
+            try {
+                BufferedReader br = new BufferedReader(new InputStreamReader(getAssets().open("floor_" + floor + "_graph.txt")));
+                String str;
+                int count = 0;
+                ArrayList<Vertex> nodes = new ArrayList<>();
+                ArrayList<Edge> edges = new ArrayList<>();
+                for (int i = 0; i < nodePoints.get(floor - 1).size(); i++) {
+                    Vertex location = new Vertex(Integer.toString(i), "Node_" + i);
+                    nodes.add(location);
+                }
+                while ((str = br.readLine()) != null) {
+                    String[] temp_strs = str.split(" ");
+                    //edges.add(new Edge(Integer.parseInt(temp_strs[0]), Integer.parseInt(temp_strs[1]), Integer.parseInt(temp_strs[2])));
+                    edges.add(new Edge("Edge_" + count, nodes.get(Integer.parseInt(temp_strs[0])), nodes.get(Integer.parseInt(temp_strs[1])), Integer.parseInt(temp_strs[2])));
+                    edges.add(new Edge("Edge_" + count, nodes.get(Integer.parseInt(temp_strs[1])), nodes.get(Integer.parseInt(temp_strs[0])), Integer.parseInt(temp_strs[2])));
+                    count++;
+                }
+                Graph g = new Graph(nodes, edges);
+                DijkstraAlgorithm dijkstra = new DijkstraAlgorithm(g);
+                floorGraph.add(dijkstra);
+                nodeArray.add(nodes);
+                /*
+                dijkstra.execute(nodes.get(4));
+                ArrayList<Vertex> pathto = dijkstra.getPath(nodes.get(17));
+                Log.i(TAG, "Path is: " + pathto.toString());
+                //dijkstra.execute(nodes.get(5));
+                //DijkstraAlgorithm d2 = new DijkstraAlgorithm(g);
+                dijkstra.execute(nodes.get(6));
+                ArrayList<Vertex> path2 = dijkstra.getPath(nodes.get(19));
+                Log.i(TAG, "Path is: " + path2.toString());*/
+                br.close();
+            } catch (IOException e) {
+                e.printStackTrace();
+                Log.e(TAG, "Error loading graph for floor" + floor);
+            }
+        }
+        Log.i(TAG, "Finished loading all floor graphs!");
+    }
+
+    private void displayPath(){
+
     }
 
     /*
@@ -159,7 +254,8 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     private void markMaps(){
 
         // Reset the map view (default zoom/pan) and reload the floor bitmaps.
-        floorMap.resetMatrix();
+        //floorMap.resetMatrix();
+        //fAttacher.
         loadFloors();
 
         // Iterate through all of the registered QR codes and mark them on the map.
@@ -183,10 +279,75 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 // where the matched QR code is located. The displayed map and text is updated accordingly.
                 curMap = curFloor;
                 floorMap.setImageBitmap(floors.get(curMap));
+                fAttacher.update();
                 floorTxt.setText("NAC Building Floor " + (curMap + 1));
-                locationTxt.setText("Last scanned location: " + Locations.get(curMap).replaceAll("_"," "));
+                locationTxt.setText("Last scanned location: " + Locations.get(lastScan).replaceAll("_"," "));
+            }
+            if(tappedCode == i && tappedCode != lastScan && tappedCode != tappedCodePrev){
+                paint.setColor(Color.GREEN);
+                canvas.drawCircle(xCoords.get(i), yCoords.get(i), 20, paint);
+                fAttacher.setDisplayMatrix(prevZoom);
+                fAttacher.update();
+            }
+            if(tappedCode == tappedCodePrev) {
+                tappedCodePrev = -2;
+                samePoint = true;
+            }
+            if (tappedCode >= 0 && lastScan >= 0 && FloorIdx.get(tappedCode) == FloorIdx.get(lastScan) && i == tappedCode) {
+                paint.setColor(Color.RED);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(10);
+
+                int source = NodeIdx.get(lastScan);
+                int destination = NodeIdx.get(tappedCode);
+                int floor = FloorIdx.get(lastScan) - 1;
+                floorGraph.get(floor).execute(nodeArray.get(floor).get(source));
+                //ArrayList<Integer> path = floorGraph.get(0).getPathIndices(nodeArray.get(0).get(destination));
+                ArrayList<Integer> path = floorGraph.get(floor).getPathIndices(nodeArray.get(floor).get(destination));
+                Log.i(TAG, "Path Found is: " + path.toString());
+                for(int index = 1; index < path.size(); index++){
+                    int prevIdx = path.get(index - 1);
+                    int curIdx = path.get(index);
+                    canvas.drawLine((float)nodePoints.get(floor).get(prevIdx).x,(float)nodePoints.get(floor).get(prevIdx).y,(float)nodePoints.get(floor).get(curIdx).x,(float)nodePoints.get(floor).get(curIdx).y,paint);
+                    fillArrow(canvas,(float)nodePoints.get(floor).get(prevIdx).x,(float)nodePoints.get(floor).get(prevIdx).y,(float)nodePoints.get(floor).get(curIdx).x,(float)nodePoints.get(floor).get(curIdx).y);
+                }
+                //canvas.drawLine((float)xCoords.get(lastScan),(float) yCoords.get(lastScan), (float) xCoords.get(tappedCode), (float) yCoords.get(tappedCode),paint);
+                //fillArrow(canvas, (float) xCoords.get(lastScan), (float) yCoords.get(lastScan), (float) xCoords.get(tappedCode), (float) yCoords.get(tappedCode));
+                isMatch = false;
             }
         }
+    }
+
+    private void fillArrow(Canvas canvas, float x0, float y0, float x1, float y1) {
+        Paint paint = new Paint();
+        paint.setColor(Color.RED);
+        paint.setStyle(Paint.Style.FILL);
+
+        float deltaX = x1 - x0;
+        float deltaY = y1 - y0;
+        double distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
+        float frac = (float) (1 / (distance / 20));
+
+        float point_x_1 = x0 + (float) ((1 - frac) * deltaX + frac * deltaY);
+        float point_y_1 = y0 + (float) ((1 - frac) * deltaY - frac * deltaX);
+
+        float point_x_2 = x1;
+        float point_y_2 = y1;
+
+        float point_x_3 = x0 + (float) ((1 - frac) * deltaX - frac * deltaY);
+        float point_y_3 = y0 + (float) ((1 - frac) * deltaY + frac * deltaX);
+
+        Path path = new Path();
+        path.setFillType(Path.FillType.EVEN_ODD);
+
+        path.moveTo(point_x_1, point_y_1);
+        path.lineTo(point_x_2, point_y_2);
+        path.lineTo(point_x_3, point_y_3);
+        path.lineTo(point_x_1, point_y_1);
+        path.lineTo(point_x_1, point_y_1);
+        path.close();
+
+        canvas.drawPath(path, paint);
     }
 
 /*
@@ -209,12 +370,14 @@ for each button press and perform the corresponding action.
             if(curMap == floors.size() - 1)
                 curMap = -1;
             floorMap.setImageBitmap(floors.get(++curMap));
+            fAttacher.update();
         }
         if(v.getId() == R.id.map_button_prev){
             //the prev floor button is pressed
             if(curMap == 0)
                 curMap = floors.size();
             floorMap.setImageBitmap(floors.get(--curMap));
+            fAttacher.update();
         }
         floorTxt.setText("NAC Building Floor " + (curMap + 1));
     }
@@ -247,6 +410,7 @@ for each button press and perform the corresponding action.
                     vibrate.vibrate(500);
                     Log.i(TAG, "Found a match!");
                     lastScan = index;
+                    isMatch = true;
                     markMaps();
                 }
                 // No match is found, set the text to show the user the result.
@@ -290,4 +454,276 @@ for each button press and perform the corresponding action.
 
         return super.onOptionsItemSelected(item);
     }
+
+    private class PhotoTapListener implements PhotoViewAttacher.OnPhotoTapListener {
+
+        @Override
+        public void onPhotoTap(View view, float x, float y) {
+            x_tap = (int)(x * floors.get(curMap).getWidth());
+            y_tap = (int)(y * floors.get(curMap).getHeight());
+
+            for (int i = 0; i < qrCodes.size(); i++) {
+                int x_pos = xCoords.get(i);
+                int y_pos = yCoords.get(i);
+                if (Math.abs(x_tap - x_pos) <= 50 && Math.abs(y_tap - y_pos) <= 50 && curMap == (FloorIdx.get(i) - 1)) {
+                    tappedCode = i;
+                    destTxt.setText("Destination: " + Locations.get(tappedCode).replaceAll("_"," "));
+                    Toast showDest = Toast.makeText(MainActivity.this, "You have selected the " + Locations.get(tappedCode).replaceAll("_"," "), Toast.LENGTH_SHORT);
+                    showDest.show();
+                    markMaps();
+                    if(!samePoint) {
+                        tappedCodePrev = i;
+                        samePoint = false;
+                    }
+                }
+            }
+            //Toast showPos = Toast.makeText(MainActivity.this, "x: " + x_tap + "  y: " + y_tap, Toast.LENGTH_SHORT);
+            //showPos.show();
+        }
+
+        @Override
+        public void onOutsidePhotoTap() {
+           // showToast("You have a tap event on the place where out of the photo.");
+        }
+    }
+
+    public class Vertex {
+        final private String id;
+        final private String name;
+
+
+        public Vertex(String id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+        public String getId() {
+            return id;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        @Override
+        public int hashCode() {
+            final int prime = 31;
+            int result = 1;
+            result = prime * result + ((id == null) ? 0 : id.hashCode());
+            return result;
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj)
+                return true;
+            if (obj == null)
+                return false;
+            if (getClass() != obj.getClass())
+                return false;
+            Vertex other = (Vertex) obj;
+            if (id == null) {
+                if (other.id != null)
+                    return false;
+            } else if (!id.equals(other.id))
+                return false;
+            return true;
+        }
+
+        @Override
+        public String toString() {
+            return name;
+        }
+
+    }
+
+    public class Edge  {
+        private final String id;
+        private final Vertex source;
+        private final Vertex destination;
+        private final int weight;
+
+        public Edge(String id, Vertex source, Vertex destination, int weight) {
+            this.id = id;
+            this.source = source;
+            this.destination = destination;
+            this.weight = weight;
+        }
+
+        public String getId() {
+            return id;
+        }
+        public Vertex getDestination() {
+            return destination;
+        }
+
+        public Vertex getSource() {
+            return source;
+        }
+        public int getWeight() {
+            return weight;
+        }
+
+        @Override
+        public String toString() {
+            return source + " " + destination;
+        }
+
+
+    }
+
+    public class Graph {
+        private final List<Vertex> vertexes;
+        private final List<Edge> edges;
+
+        public Graph(List<Vertex> vertexes, List<Edge> edges) {
+            this.vertexes = vertexes;
+            this.edges = edges;
+        }
+
+        public List<Vertex> getVertexes() {
+            return vertexes;
+        }
+
+        public List<Edge> getEdges() {
+            return edges;
+        }
+
+
+
+    }
+
+    public class DijkstraAlgorithm {
+
+        private final List<Vertex> nodes;
+        private final List<Edge> edges;
+        private Set<Vertex> settledNodes;
+        private Set<Vertex> unSettledNodes;
+        private Map<Vertex, Vertex> predecessors;
+        private Map<Vertex, Integer> distance;
+
+        public DijkstraAlgorithm(Graph graph) {
+            // create a copy of the array so that we can operate on this array
+            this.nodes = new ArrayList<Vertex>(graph.getVertexes());
+            this.edges = new ArrayList<Edge>(graph.getEdges());
+        }
+
+        public void execute(Vertex source) {
+            settledNodes = new HashSet<Vertex>();
+            unSettledNodes = new HashSet<Vertex>();
+            distance = new HashMap<Vertex, Integer>();
+            predecessors = new HashMap<Vertex, Vertex>();
+            distance.put(source, 0);
+            unSettledNodes.add(source);
+            while (unSettledNodes.size() > 0) {
+                Vertex node = getMinimum(unSettledNodes);
+                settledNodes.add(node);
+                unSettledNodes.remove(node);
+                findMinimalDistances(node);
+            }
+        }
+
+        private void findMinimalDistances(Vertex node) {
+            List<Vertex> adjacentNodes = getNeighbors(node);
+            for (Vertex target : adjacentNodes) {
+                if (getShortestDistance(target) > getShortestDistance(node)
+                        + getDistance(node, target)) {
+                    distance.put(target, getShortestDistance(node)
+                            + getDistance(node, target));
+                    predecessors.put(target, node);
+                    unSettledNodes.add(target);
+                }
+            }
+
+        }
+
+        private int getDistance(Vertex node, Vertex target) {
+            for (Edge edge : edges) {
+                if (edge.getSource().equals(node)
+                        && edge.getDestination().equals(target)) {
+                    return edge.getWeight();
+                }
+            }
+            throw new RuntimeException("Should not happen");
+        }
+
+        private List<Vertex> getNeighbors(Vertex node) {
+            List<Vertex> neighbors = new ArrayList<Vertex>();
+            for (Edge edge : edges) {
+                if (edge.getSource().equals(node)
+                        && !isSettled(edge.getDestination())) {
+                    neighbors.add(edge.getDestination());
+                }
+            }
+            return neighbors;
+        }
+
+        private Vertex getMinimum(Set<Vertex> vertexes) {
+            Vertex minimum = null;
+            for (Vertex vertex : vertexes) {
+                if (minimum == null) {
+                    minimum = vertex;
+                } else {
+                    if (getShortestDistance(vertex) < getShortestDistance(minimum)) {
+                        minimum = vertex;
+                    }
+                }
+            }
+            return minimum;
+        }
+
+        private boolean isSettled(Vertex vertex) {
+            return settledNodes.contains(vertex);
+        }
+
+        private int getShortestDistance(Vertex destination) {
+            Integer d = distance.get(destination);
+            if (d == null) {
+                return Integer.MAX_VALUE;
+            } else {
+                return d;
+            }
+        }
+
+        /*
+         * This method returns the path from the source to the selected target and
+         * NULL if no path exists
+         */
+        public ArrayList<Vertex> getPath(Vertex target) {
+            //LinkedList<Vertex> path = new LinkedList<Vertex>();
+            ArrayList<Vertex> path = new ArrayList<>();
+            Vertex step = target;
+            // check if a path exists
+            if (predecessors.get(step) == null) {
+                return null;
+            }
+            path.add(step);
+            while (predecessors.get(step) != null) {
+                step = predecessors.get(step);
+                path.add(step);
+            }
+            // Put it into the correct order
+            Collections.reverse(path);
+            return path;
+        }
+
+        public ArrayList<Integer> getPathIndices(Vertex target) {
+            //LinkedList<Vertex> path = new LinkedList<Vertex>();
+            ArrayList<Integer> path = new ArrayList<>();
+            Vertex step = target;
+            // check if a path exists
+            if (predecessors.get(step) == null) {
+                return null;
+            }
+            path.add(Integer.parseInt(step.getId()));
+            while (predecessors.get(step) != null) {
+                step = predecessors.get(step);
+                path.add(Integer.parseInt(step.getId()));
+            }
+            // Put it into the correct order
+            Collections.reverse(path);
+            return path;
+        }
+
+    }
 }
+
