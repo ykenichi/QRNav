@@ -1,6 +1,9 @@
 package capstone.project.qrnav;
 
+import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.Context;
+import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -13,6 +16,7 @@ import android.graphics.Point;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Vibrator;
+import android.speech.RecognizerIntent;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
@@ -21,6 +25,7 @@ import android.view.View.OnClickListener;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.widget.Button;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -36,6 +41,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -45,8 +51,12 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
 
     // Initialize global variables
     private static final String TAG = "QRNavigation";
-    private Button scanButton, mapButtonNext, mapButtonPrev;
+    public static final int ZXING_REQUEST_CODE = 0x0000c0de;
+    public static final int SPEECH_REQUEST_CODE = 123;
+    private Button scanButton;
+    private ImageButton mapButtonNext, mapButtonPrev, speechButton;
     private TextView floorTxt, locationTxt, destTxt;
+    public AlertDialog.Builder locationsMenu;
     private Toast toastError, toastSuccess;
     private ImageView floorMap;
     private PhotoViewAttacher fAttacher;
@@ -85,8 +95,9 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         setSupportActionBar(toolbar);
         vibrate = (Vibrator) this.getSystemService(Context.VIBRATOR_SERVICE);
         scanButton = (Button)findViewById(R.id.scan_button);
-        mapButtonNext = (Button)findViewById(R.id.map_button_next);
-        mapButtonPrev = (Button)findViewById(R.id.map_button_prev);
+        mapButtonNext = (ImageButton)findViewById(R.id.map_button_next);
+        mapButtonPrev = (ImageButton)findViewById(R.id.map_button_prev);
+        speechButton = (ImageButton)findViewById(R.id.speech_button);
         floorTxt = (TextView)findViewById(R.id.current_floor);
         locationTxt = (TextView)findViewById(R.id.scan_content);
         destTxt = (TextView)findViewById(R.id.destination_text);
@@ -115,12 +126,39 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         scanButton.setOnClickListener(this);
         mapButtonNext.setOnClickListener(this);
         mapButtonPrev.setOnClickListener(this);
+        speechButton.setOnClickListener(this);
         fAttacher.setOnPhotoTapListener(new PhotoTapListener());
+
+        CharSequence selectLocations[] = Locations.toArray(new CharSequence[Locations.size()]);
+        locationsMenu = new AlertDialog.Builder(this);
+        locationsMenu.setTitle("Choose a Destination");
+        locationsMenu.setItems(selectLocations, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                String location = Locations.get(which).replaceAll("_", " ");
+                destTxt.setText("Destination: " + location);
+                vibrate.vibrate(100);
+                tappedCode = which;
+                Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT).show();
+                markMaps();
+            }
+        });
 
         // Set floorTxt with the current floor value (should be 1 at the start of the app). Also set the location text.
         floorTxt.setText("NAC Building Floor " + (curMap + 1));
         locationTxt.setText("Please scan a QR code");
         destTxt.setText("Destination: None");
+    }
+
+    private void resetAll(){
+        lastScan = -1;
+        curMap = 0;
+        tappedCode = -1;
+        tappedCodePrev = -2;
+        floorTxt.setText("NAC Building Floor 1");
+        locationTxt.setText("Please scan a QR code");
+        destTxt.setText("Destination: None");
+        markMaps();
     }
 
     /*
@@ -134,6 +172,21 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         prevZoom = fAttacher.getDisplayMatrix();
         for(int i = 0; i < imgArray.length; i++){
             floors.add(BitmapFactory.decodeResource(getResources(),imgArray[i]).copy(Bitmap.Config.ARGB_8888, true));
+            Canvas canvas = new Canvas(floors.get(i));
+            Paint paint = new Paint();
+            paint.setColor(Color.GREEN);
+            paint.setTextSize(50);
+            paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
+            int width = floors.get(i).getWidth();
+            int height = floors.get(i).getHeight();
+            canvas.drawText("Destination", width - 300, height - 35, paint);
+            canvas.drawCircle(width - 325, height - 50, 20, paint);
+            paint.setColor(Color.RED);
+            canvas.drawText("Start", width - 300, height - 85, paint);
+            canvas.drawCircle(width - 325, height - 100, 20, paint);
+            paint.setColor(Color.BLUE);
+            canvas.drawText("QR Code", width - 300, height - 135, paint);
+            canvas.drawCircle(width - 325, height - 150, 20, paint);
         }
         floorMap.setImageBitmap(floors.get(curMap));
         fAttacher.update();
@@ -167,7 +220,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 FloorIdx.add(Integer.parseInt(temp_strs[1]));
                 xCoords.add(Integer.parseInt(temp_strs[2]));
                 yCoords.add(Integer.parseInt(temp_strs[3]));
-                Locations.add(temp_strs[4]);
+                Locations.add(temp_strs[4].replaceAll("_"," "));
                 NodeIdx.add(Integer.parseInt(temp_strs[5]));
             }
             br.close();
@@ -241,10 +294,6 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         Log.i(TAG, "Finished loading all floor graphs!");
     }
 
-    private void displayPath(){
-
-    }
-
     /*
     markMaps() - This function will go through the bitmap floorplans and draw circle at specified locations
     These locations are determined beforehand and will be stored in a text file to make the code neater
@@ -271,9 +320,6 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             // Now we will mark the matched QR code on the map
             if(lastScan == i) {
                 paint.setColor(Color.RED);
-                paint.setTextSize(50);
-                paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
-                canvas.drawText("You are here", xCoords.get(i) - 135, yCoords.get(i) - 35, paint); // Puts some text above the matched point
                 canvas.drawCircle(xCoords.get(i), yCoords.get(i), 30, paint);
                 // Now we set curMap (int used to keep track of the current floor) to be the floor
                 // where the matched QR code is located. The displayed map and text is updated accordingly.
@@ -281,7 +327,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 floorMap.setImageBitmap(floors.get(curMap));
                 fAttacher.update();
                 floorTxt.setText("NAC Building Floor " + (curMap + 1));
-                locationTxt.setText("Last scanned location: " + Locations.get(lastScan).replaceAll("_"," "));
+                locationTxt.setText("Last scanned location: " + Locations.get(lastScan));
             }
             if(tappedCode == i && tappedCode != lastScan && tappedCode != tappedCodePrev){
                 paint.setColor(Color.GREEN);
@@ -293,7 +339,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 tappedCodePrev = -2;
                 samePoint = true;
             }
-            if (tappedCode >= 0 && lastScan >= 0 && FloorIdx.get(tappedCode) == FloorIdx.get(lastScan) && i == tappedCode) {
+            if (tappedCode >= 0 && lastScan >= 0 && FloorIdx.get(tappedCode) == FloorIdx.get(lastScan) && i == tappedCode && tappedCode != lastScan) {
                 paint.setColor(Color.RED);
                 paint.setStyle(Paint.Style.STROKE);
                 paint.setStrokeWidth(10);
@@ -379,7 +425,26 @@ for each button press and perform the corresponding action.
             floorMap.setImageBitmap(floors.get(--curMap));
             fAttacher.update();
         }
+        if(v.getId() == R.id.speech_button){
+            promptSpeechInput();
+        }
         floorTxt.setText("NAC Building Floor " + (curMap + 1));
+    }
+
+    private void promptSpeechInput() {
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
+        intent.putExtra(RecognizerIntent.EXTRA_PROMPT,
+                getString(R.string.speech_prompt));
+        try {
+            startActivityForResult(intent, SPEECH_REQUEST_CODE);
+        } catch (ActivityNotFoundException a) {
+            Toast.makeText(getApplicationContext(),
+                    getString(R.string.speech_not_supported),
+                    Toast.LENGTH_SHORT).show();
+        }
     }
 
     /*
@@ -388,49 +453,97 @@ for each button press and perform the corresponding action.
      */
     public void onActivityResult(int requestCode, int resultCode, Intent intent){
         //retrieve the scanning result
-        IntentResult result = IntentIntegrator.parseActivityResult(requestCode, resultCode, intent);
+        switch(requestCode) {
+            case ZXING_REQUEST_CODE:
+            IntentResult result = IntentIntegrator.parseActivityResult(requestCode, resultCode, intent);
 
-        if(result != null){
-            //valid result obtained
-            String scannedContent = result.getContents();
-            if(scannedContent != null) {
-                Log.i(TAG, "QR Code Contents: " + scannedContent);
-                Boolean foundMatch = false;
-                int index = 0;
-                // Check the qrCodes list to see if the scanned code is a match. If it is, record the index of the
-                // matched code and set the bool foundMatch to true.
-                for(int i = 0; i < qrCodes.size(); i++) {
-                    if(qrCodes.get(i).equals(scannedContent)) {
-                        foundMatch = true;
-                        index = i;
+            if (result != null) {
+                //valid result obtained
+                String scannedContent = result.getContents();
+                if (scannedContent != null) {
+                    Log.i(TAG, "QR Code Contents: " + scannedContent);
+                    Boolean foundMatch = false;
+                    int index = 0;
+                    // Check the qrCodes list to see if the scanned code is a match. If it is, record the index of the
+                    // matched code and set the bool foundMatch to true.
+                    for (int i = 0; i < qrCodes.size(); i++) {
+                        if (qrCodes.get(i).equals(scannedContent)) {
+                            foundMatch = true;
+                            index = i;
+                        }
                     }
+                    // Match is found, vibrate the device and mark the map with the scanned qr code.
+                    if (foundMatch) {
+                        vibrate.vibrate(500);
+                        Log.i(TAG, "Found a match!");
+                        lastScan = index;
+                        isMatch = true;
+                        markMaps();
+                    }
+                    // No match is found, set the text to show the user the result.
+                    else {
+                        Log.i(TAG, "Scanned code did not match");
+                        lastScan = -1;
+                        markMaps();
+                        floorTxt.setText("Could not find a match");
+                        locationTxt.setText("Please scan another QR code");
+                    }
+                    toastSuccess.show();
+                } else {
+                    toastError.show();
                 }
-                // Match is found, vibrate the device and mark the map with the scanned qr code.
-                if(foundMatch){
-                    vibrate.vibrate(500);
-                    Log.i(TAG, "Found a match!");
-                    lastScan = index;
-                    isMatch = true;
-                    markMaps();
-                }
-                // No match is found, set the text to show the user the result.
-                else{
-                    Log.i(TAG, "Scanned code did not match");
-                    lastScan = -1;
-                    markMaps();
-                    floorTxt.setText("Could not find a match");
-                    locationTxt.setText("Please scan another QR code");
-                }
-                toastSuccess.show();
-            }
-            else{
+            } else {
+                //No result or invalid result obtained (i.e. user presses the back button instead of scanning something)
                 toastError.show();
             }
+                break;
+            case SPEECH_REQUEST_CODE:
+                if(resultCode == RESULT_OK && intent != null){
+                    ArrayList<String> speechResult = intent.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                    if(speechResult.get(0).length() > 6)
+                        Log.i(TAG,speechResult.get(0).substring(6));
+
+                    for(int i = 0; i < Locations.size(); i++){
+                        String location = Locations.get(i);
+                        String result_location = speechResult.get(0);
+                        if(location.equalsIgnoreCase(result_location)) {
+                            destTxt.setText("Destination: " +  location);
+                            vibrate.vibrate(100);
+                            tappedCode = i;
+                            Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT).show();
+                            markMaps();
+                            return;
+                        }
+                        if(result_location.toLowerCase().startsWith("start") && location.equalsIgnoreCase(result_location.substring(6))){
+                            vibrate.vibrate(500);
+                            Log.i(TAG, "Found a match!");
+                            lastScan = i;
+                            isMatch = true;
+                            markMaps();
+                            return;
+                        }
+                    }
+                    Toast.makeText(MainActivity.this, "No location found.", Toast.LENGTH_SHORT).show();
+                    break;
+                }
         }
-        else{
-            //No result or invalid result obtained (i.e. user presses the back button instead of scanning something)
-            toastError.show();
-        }
+    }
+
+    private void chooseLocation(){
+        CharSequence selectLocations[] = new CharSequence[Locations.size()];
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Choose a Destination");
+        builder.setItems(selectLocations, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                String location = Locations.get(which);
+                destTxt.setText("Destination: " +  location);
+                vibrate.vibrate(100);
+                tappedCode = which;
+                Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT).show();
+                markMaps();
+            }
+        });
     }
 
     @Override
@@ -448,8 +561,11 @@ for each button press and perform the corresponding action.
         int id = item.getItemId();
 
         //noinspection SimplifiableIfStatement
-        if (id == R.id.action_settings) {
-            return true;
+        if (id == R.id.action_reset) {
+            resetAll();
+        }
+        if(id == R.id.action_locations){
+            locationsMenu.show();
         }
 
         return super.onOptionsItemSelected(item);
@@ -467,8 +583,9 @@ for each button press and perform the corresponding action.
                 int y_pos = yCoords.get(i);
                 if (Math.abs(x_tap - x_pos) <= 50 && Math.abs(y_tap - y_pos) <= 50 && curMap == (FloorIdx.get(i) - 1)) {
                     tappedCode = i;
-                    destTxt.setText("Destination: " + Locations.get(tappedCode).replaceAll("_"," "));
-                    Toast showDest = Toast.makeText(MainActivity.this, "You have selected the " + Locations.get(tappedCode).replaceAll("_"," "), Toast.LENGTH_SHORT);
+                    vibrate.vibrate(100);
+                    destTxt.setText("Destination: " + Locations.get(tappedCode));
+                    Toast showDest = Toast.makeText(MainActivity.this, "You have selected the " + Locations.get(tappedCode), Toast.LENGTH_SHORT);
                     showDest.show();
                     markMaps();
                     if(!samePoint) {
