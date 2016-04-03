@@ -12,4 +12,12 @@
         android:orderInCategory="100"
         android:title="@string/action_locations"
         app:showAsAction="never" />
+    <item
+        android:id="@+id/action_vibration"
+        android:title="@string/action_vibration"
+        android:checkable="true" />
+    <item
+        android:id="@+id/action_units"
+        android:title="@string/action_units"
+        android:checkable="true" />
 </menu>

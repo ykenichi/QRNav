@@ -20,6 +20,7 @@ import android.speech.RecognizerIntent;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.View;
 import android.view.View.OnClickListener;
 import android.view.Menu;
@@ -45,6 +46,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
+
 import uk.co.senab.photoview.PhotoViewAttacher;
 
 public class MainActivity extends AppCompatActivity implements OnClickListener {
@@ -53,9 +55,11 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     private static final String TAG = "QRNavigation";
     public static final int ZXING_REQUEST_CODE = 0x0000c0de;
     public static final int SPEECH_REQUEST_CODE = 123;
-    private Button scanButton;
-    private ImageButton mapButtonNext, mapButtonPrev, speechButton;
-    private TextView floorTxt, locationTxt, destTxt;
+    public static final float mapScaleMeters = 0.05335f;
+    public static final float mapScaleFeet = 0.175f;
+    private Toolbar mainToolbar;
+    private ImageButton mapButtonNext, mapButtonPrev, speechButton, scanButton, directionNext, directionPrev;
+    private TextView floorTxt, locationTxt, destTxt, directionText;
     public AlertDialog.Builder locationsMenu;
     private Toast toastError, toastSuccess;
     private ImageView floorMap;
@@ -71,12 +75,17 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     private ArrayList<DijkstraAlgorithm> floorGraph = new ArrayList<>();
     private ArrayList<ArrayList<Vertex>> nodeArray = new ArrayList<>();
     private ArrayList<ArrayList<Point>> nodePoints = new ArrayList<>();
+    private ArrayList<String> listDirections = new ArrayList<>();
     private int lastScan = -1;
     private int curMap = 0;
+    private int curDirection = 0;
     private Vibrator vibrate;
+    private boolean isVibrationOn = true;
     private int tappedCode = -1;
     private int tappedCodePrev = -2;
-    private boolean samePoint, isMatch = false;
+    private boolean samePoint = false;
+    private boolean isMatch = false;
+    private boolean isMetric = false;
     private int x_tap,y_tap;
     private Matrix prevZoom;
 
@@ -91,18 +100,23 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         setContentView(R.layout.activity_main);
 
         // Initialize UI Elements
-        Toolbar toolbar = (Toolbar)findViewById(R.id.toolbar);
-        setSupportActionBar(toolbar);
+        mainToolbar = (Toolbar)findViewById(R.id.toolbar);
+        setSupportActionBar(mainToolbar);
+        getSupportActionBar().setTitle(R.string.default_floor);
         vibrate = (Vibrator) this.getSystemService(Context.VIBRATOR_SERVICE);
-        scanButton = (Button)findViewById(R.id.scan_button);
+        scanButton = (ImageButton)findViewById(R.id.scan_button);
         mapButtonNext = (ImageButton)findViewById(R.id.map_button_next);
         mapButtonPrev = (ImageButton)findViewById(R.id.map_button_prev);
         speechButton = (ImageButton)findViewById(R.id.speech_button);
-        floorTxt = (TextView)findViewById(R.id.current_floor);
-        locationTxt = (TextView)findViewById(R.id.scan_content);
+        directionPrev = (ImageButton)findViewById(R.id.direction_button_prev);
+        directionNext = (ImageButton)findViewById(R.id.direction_button_next);
+        //floorTxt = (TextView)findViewById(R.id.current_floor);
+        locationTxt = (TextView)findViewById(R.id.source_text);
         destTxt = (TextView)findViewById(R.id.destination_text);
+        directionText = (TextView)findViewById(R.id.direction_text);
         floorMap = (ImageView)findViewById(R.id.map);
         fAttacher = new PhotoViewAttacher(floorMap);
+
 
         // Declare error and success Toasts we use to display whether or not the scan was successful.
         toastError = Toast.makeText(getApplicationContext(), "QR code was unsuccessfully scanned", Toast.LENGTH_SHORT);
@@ -127,6 +141,8 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         mapButtonNext.setOnClickListener(this);
         mapButtonPrev.setOnClickListener(this);
         speechButton.setOnClickListener(this);
+        directionNext.setOnClickListener(this);
+        directionPrev.setOnClickListener(this);
         fAttacher.setOnPhotoTapListener(new PhotoTapListener());
 
         CharSequence selectLocations[] = Locations.toArray(new CharSequence[Locations.size()]);
@@ -137,17 +153,15 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             public void onClick(DialogInterface dialog, int which) {
                 String location = Locations.get(which).replaceAll("_", " ");
                 destTxt.setText("Destination: " + location);
-                vibrate.vibrate(100);
+                if(isVibrationOn)
+                    vibrate.vibrate(100);
                 tappedCode = which;
-                Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT).show();
+                Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT);
+                toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
+                toast.show();
                 markMaps();
             }
         });
-
-        // Set floorTxt with the current floor value (should be 1 at the start of the app). Also set the location text.
-        floorTxt.setText("NAC Building Floor " + (curMap + 1));
-        locationTxt.setText("Please scan a QR code");
-        destTxt.setText("Destination: None");
     }
 
     private void resetAll(){
@@ -155,7 +169,8 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         curMap = 0;
         tappedCode = -1;
         tappedCodePrev = -2;
-        floorTxt.setText("NAC Building Floor 1");
+        //floorTxt.setText("NAC Building Floor 1");
+        getSupportActionBar().setTitle(R.string.default_floor);
         locationTxt.setText("Please scan a QR code");
         destTxt.setText("Destination: None");
         markMaps();
@@ -234,7 +249,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     }
 
     private void loadNodeCoords(){
-        for(int floor = 1; floor < 3; floor++) {
+        for(int floor = 1; floor < 9; floor++) {
             try {
                 BufferedReader br = new BufferedReader(new InputStreamReader(getAssets().open("floor_" + floor + "_nodelist.txt")));
                 String str;
@@ -254,7 +269,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     }
 
     private void loadGraphs(){
-        for(int floor = 1; floor < 3; floor++) {
+        for(int floor = 1; floor < 9; floor++) {
             try {
                 BufferedReader br = new BufferedReader(new InputStreamReader(getAssets().open("floor_" + floor + "_graph.txt")));
                 String str;
@@ -326,7 +341,8 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 curMap = curFloor;
                 floorMap.setImageBitmap(floors.get(curMap));
                 fAttacher.update();
-                floorTxt.setText("NAC Building Floor " + (curMap + 1));
+                //floorTxt.setText("NAC Building Floor " + (curMap + 1));
+                getSupportActionBar().setTitle("NAC Building Floor " + (curMap + 1));
                 locationTxt.setText("Last scanned location: " + Locations.get(lastScan));
             }
             if(tappedCode == i && tappedCode != lastScan && tappedCode != tappedCodePrev){
@@ -350,18 +366,90 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 floorGraph.get(floor).execute(nodeArray.get(floor).get(source));
                 //ArrayList<Integer> path = floorGraph.get(0).getPathIndices(nodeArray.get(0).get(destination));
                 ArrayList<Integer> path = floorGraph.get(floor).getPathIndices(nodeArray.get(floor).get(destination));
-                Log.i(TAG, "Path Found is: " + path.toString());
-                for(int index = 1; index < path.size(); index++){
-                    int prevIdx = path.get(index - 1);
-                    int curIdx = path.get(index);
-                    canvas.drawLine((float)nodePoints.get(floor).get(prevIdx).x,(float)nodePoints.get(floor).get(prevIdx).y,(float)nodePoints.get(floor).get(curIdx).x,(float)nodePoints.get(floor).get(curIdx).y,paint);
-                    fillArrow(canvas,(float)nodePoints.get(floor).get(prevIdx).x,(float)nodePoints.get(floor).get(prevIdx).y,(float)nodePoints.get(floor).get(curIdx).x,(float)nodePoints.get(floor).get(curIdx).y);
+                if(path == null) {
+                    Log.e(TAG, "Error: no path found");
+                    return;
                 }
-                //canvas.drawLine((float)xCoords.get(lastScan),(float) yCoords.get(lastScan), (float) xCoords.get(tappedCode), (float) yCoords.get(tappedCode),paint);
-                //fillArrow(canvas, (float) xCoords.get(lastScan), (float) yCoords.get(lastScan), (float) xCoords.get(tappedCode), (float) yCoords.get(tappedCode));
+                Log.i(TAG, "Path Found is: " + path.toString());
+                listDirections.clear();
+                curDirection = 0;
+                drawPath(floor, path, paint, canvas);
+                directionText.setText(listDirections.get(curDirection));
                 isMatch = false;
             }
         }
+    }
+
+    private void drawPath(int floor, ArrayList<Integer> path, Paint paint, Canvas canvas){
+        int start_x = nodePoints.get(floor).get(path.get(0)).x;
+        int start_y = nodePoints.get(floor).get(path.get(0)).y;
+        int end_x,end_y;
+        for(int index = 1; index < path.size() - 1; index++){
+            int prevIdx = path.get(index - 1);
+            int curIdx = path.get(index);
+            int nextIdx = path.get(index + 1);
+
+            int prev_x = nodePoints.get(floor).get(prevIdx).x;
+            int prev_y =  nodePoints.get(floor).get(prevIdx).y;
+            int cur_x = nodePoints.get(floor).get(curIdx).x;
+            int cur_y = nodePoints.get(floor).get(curIdx).y;
+            int next_x = nodePoints.get(floor).get(nextIdx).x;
+            int next_y = nodePoints.get(floor).get(nextIdx).y;
+
+            int slope_1 = getSlope(prev_x, prev_y, cur_x, cur_y);
+            int slope_2 = getSlope(cur_x, cur_y, next_x, next_y);
+
+            if(slope_1 != slope_2){
+                end_x = cur_x;
+                end_y = cur_y;
+                canvas.drawLine((float)start_x,(float)start_y,(float)end_x,(float)end_y,paint);
+                fillArrow(canvas,(float)start_x,(float)start_y,(float)end_x,(float)end_y);
+                listDirections.add("Please walk " + getDIstance(start_x, start_y, end_x, end_y) + " " + getDirection(start_x, start_y, end_x, end_y));
+                start_x = end_x;
+                start_y = end_y;
+            }
+        }
+        end_x = nodePoints.get(floor).get(path.get(path.size() - 1)).x;
+        end_y = nodePoints.get(floor).get(path.get(path.size() - 1)).y;
+        canvas.drawLine((float)start_x,(float)start_y,(float)end_x,(float)end_y,paint);
+        fillArrow(canvas, (float) start_x, (float) start_y, (float) end_x, (float) end_y);
+        listDirections.add("Please walk " + getDIstance(start_x, start_y, end_x, end_y) + " " + getDirection(start_x, start_y, end_x, end_y));
+    }
+
+    private String getDIstance(int x1, int y1, int x2, int y2){
+        double distanceInPixels = Math.sqrt(Math.pow((double)(x2 - x1),2) + Math.pow((double)(y2 - y1),2));
+        if(isMetric)
+            return (int)(distanceInPixels*mapScaleMeters) + " meters";
+        else
+            return (int)(distanceInPixels*mapScaleFeet) + " feet";
+    }
+
+    private String getDirection(int x1, int y1, int x2, int y2){
+        if(x2 > x1 && y2 == y1)
+            return "east";
+        else if(x2 < x1 && y2 == y1)
+            return "west";
+        else if(x2 == x1 && y2 > y1)
+            return "south";
+        else if(x2 == x1 && y2 < y1)
+            return "north";
+        else if(x2 > x1 && y2 < y1)
+            return "northeast";
+        else if(x2 < x1 && y2 < y1)
+            return "northwest";
+        else if(x2 > x1 && y2 > y1)
+            return "southeast";
+        else if(x2 < x1 && y2 > y1)
+            return "southwest";
+        else
+            return "";
+    }
+
+    private int getSlope(int x1, int y1, int x2, int y2){
+        if((x2 - x1) != 0)
+            return  (y2 - y1) / (x2 - x1);
+        else
+            return Integer.MAX_VALUE;
     }
 
     private void fillArrow(Canvas canvas, float x0, float y0, float x1, float y1) {
@@ -396,11 +484,11 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         canvas.drawPath(path, paint);
     }
 
-/*
-onClick(View v) - This function is called whenever one of the buttons are pressed.
-v.getId() gives us the id of what was clicked. We can use this to set up a case
-for each button press and perform the corresponding action.
- */
+    /*
+    onClick(View v) - This function is called whenever one of the buttons are pressed.
+    v.getId() gives us the id of what was clicked. We can use this to set up a case
+    for each button press and perform the corresponding action.
+     */
     public void onClick(View v){
         // If the "scan qr code" button is clicked, start an intent to grab the QR code
         if(v.getId() == R.id.scan_button){
@@ -411,7 +499,7 @@ for each button press and perform the corresponding action.
             integrator.setPrompt("Scan a QR Code");
             integrator.initiateScan();
         }
-        if(v.getId() == R.id.map_button_next){
+        if (v.getId() == R.id.map_button_next){
             //The next floor button is pressed
             if(curMap == floors.size() - 1)
                 curMap = -1;
@@ -428,7 +516,18 @@ for each button press and perform the corresponding action.
         if(v.getId() == R.id.speech_button){
             promptSpeechInput();
         }
-        floorTxt.setText("NAC Building Floor " + (curMap + 1));
+        if(v.getId() == R.id.direction_button_next) {
+            if(curDirection == listDirections.size() - 1 || listDirections.size() == 0)
+                return;
+            directionText.setText(listDirections.get(++curDirection));
+        }
+        if(v.getId() == R.id.direction_button_prev){
+            if(curDirection == 0)
+                return;
+            directionText.setText(listDirections.get(--curDirection));
+        }
+        //floorTxt.setText("NAC Building Floor " + (curMap + 1));
+        getSupportActionBar().setTitle("NAC Building Floor " + (curMap + 1));
     }
 
     private void promptSpeechInput() {
@@ -455,47 +554,48 @@ for each button press and perform the corresponding action.
         //retrieve the scanning result
         switch(requestCode) {
             case ZXING_REQUEST_CODE:
-            IntentResult result = IntentIntegrator.parseActivityResult(requestCode, resultCode, intent);
+                IntentResult result = IntentIntegrator.parseActivityResult(requestCode, resultCode, intent);
 
-            if (result != null) {
-                //valid result obtained
-                String scannedContent = result.getContents();
-                if (scannedContent != null) {
-                    Log.i(TAG, "QR Code Contents: " + scannedContent);
-                    Boolean foundMatch = false;
-                    int index = 0;
-                    // Check the qrCodes list to see if the scanned code is a match. If it is, record the index of the
-                    // matched code and set the bool foundMatch to true.
-                    for (int i = 0; i < qrCodes.size(); i++) {
-                        if (qrCodes.get(i).equals(scannedContent)) {
-                            foundMatch = true;
-                            index = i;
+                if (result != null) {
+                    //valid result obtained
+                    String scannedContent = result.getContents();
+                    if (scannedContent != null) {
+                        Log.i(TAG, "QR Code Contents: " + scannedContent);
+                        Boolean foundMatch = false;
+                        int index = 0;
+                        // Check the qrCodes list to see if the scanned code is a match. If it is, record the index of the
+                        // matched code and set the bool foundMatch to true.
+                        for (int i = 0; i < qrCodes.size(); i++) {
+                            if (qrCodes.get(i).equals(scannedContent)) {
+                                foundMatch = true;
+                                index = i;
+                            }
                         }
+                        // Match is found, vibrate the device and mark the map with the scanned qr code.
+                        if (foundMatch) {
+                            if(isVibrationOn)
+                                vibrate.vibrate(500);
+                            Log.i(TAG, "Found a match!");
+                            lastScan = index;
+                            isMatch = true;
+                            markMaps();
+                        }
+                        // No match is found, set the text to show the user the result.
+                        else {
+                            Log.i(TAG, "Scanned code did not match");
+                            lastScan = -1;
+                            markMaps();
+                            //floorTxt.setText("Could not find a match");
+                            locationTxt.setText("Please scan another QR code");
+                        }
+                        toastSuccess.show();
+                    } else {
+                        toastError.show();
                     }
-                    // Match is found, vibrate the device and mark the map with the scanned qr code.
-                    if (foundMatch) {
-                        vibrate.vibrate(500);
-                        Log.i(TAG, "Found a match!");
-                        lastScan = index;
-                        isMatch = true;
-                        markMaps();
-                    }
-                    // No match is found, set the text to show the user the result.
-                    else {
-                        Log.i(TAG, "Scanned code did not match");
-                        lastScan = -1;
-                        markMaps();
-                        floorTxt.setText("Could not find a match");
-                        locationTxt.setText("Please scan another QR code");
-                    }
-                    toastSuccess.show();
                 } else {
+                    //No result or invalid result obtained (i.e. user presses the back button instead of scanning something)
                     toastError.show();
                 }
-            } else {
-                //No result or invalid result obtained (i.e. user presses the back button instead of scanning something)
-                toastError.show();
-            }
                 break;
             case SPEECH_REQUEST_CODE:
                 if(resultCode == RESULT_OK && intent != null){
@@ -507,15 +607,19 @@ for each button press and perform the corresponding action.
                         String location = Locations.get(i);
                         String result_location = speechResult.get(0);
                         if(location.equalsIgnoreCase(result_location)) {
-                            destTxt.setText("Destination: " +  location);
-                            vibrate.vibrate(100);
+                            destTxt.setText("Destination: " + location);
+                            if(isVibrationOn)
+                                vibrate.vibrate(100);
                             tappedCode = i;
-                            Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT).show();
+                            Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT);
+                            toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
+                            toast.show();
                             markMaps();
                             return;
                         }
                         if(result_location.toLowerCase().startsWith("start") && location.equalsIgnoreCase(result_location.substring(6))){
-                            vibrate.vibrate(500);
+                            if(isVibrationOn)
+                                vibrate.vibrate(500);
                             Log.i(TAG, "Found a match!");
                             lastScan = i;
                             isMatch = true;
@@ -537,10 +641,13 @@ for each button press and perform the corresponding action.
             @Override
             public void onClick(DialogInterface dialog, int which) {
                 String location = Locations.get(which);
-                destTxt.setText("Destination: " +  location);
-                vibrate.vibrate(100);
+                destTxt.setText("Destination: " + location);
+                if(isVibrationOn)
+                    vibrate.vibrate(100);
                 tappedCode = which;
-                Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT).show();
+                Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT);
+                toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
+                toast.show();
                 markMaps();
             }
         });
@@ -550,6 +657,8 @@ for each button press and perform the corresponding action.
     public boolean onCreateOptionsMenu(Menu menu) {
         // Inflate the menu; this adds items to the action bar if it is present.
         getMenuInflater().inflate(R.menu.menu_main, menu);
+        menu.findItem(R.id.action_vibration).setChecked(true);
+        menu.findItem(R.id.action_units).setChecked(false);
         return true;
     }
 
@@ -558,16 +667,33 @@ for each button press and perform the corresponding action.
         // Handle action bar item clicks here. The action bar will
         // automatically handle clicks on the Home/Up button, so long
         // as you specify a parent activity in AndroidManifest.xml.
-        int id = item.getItemId();
-
-        //noinspection SimplifiableIfStatement
-        if (id == R.id.action_reset) {
-            resetAll();
+        switch(item.getItemId()) {
+            //noinspection SimplifiableIfStatement
+            case R.id.action_reset:
+                resetAll();
+                return true;
+            case R.id.action_locations:
+                locationsMenu.show();
+                return true;
+            case R.id.action_vibration:
+                if(item.isChecked()) {
+                    item.setChecked(false);
+                    isVibrationOn = false;
+                }
+                else{
+                    item.setChecked(true);
+                    isVibrationOn = true;
+                }
+            case R.id.action_units:
+                if(item.isChecked()) {
+                    item.setChecked(false);
+                    isMetric = false;
+                }
+                else{
+                    item.setChecked(true);
+                    isMetric = true;
+                }
         }
-        if(id == R.id.action_locations){
-            locationsMenu.show();
-        }
-
         return super.onOptionsItemSelected(item);
     }
 
@@ -583,10 +709,12 @@ for each button press and perform the corresponding action.
                 int y_pos = yCoords.get(i);
                 if (Math.abs(x_tap - x_pos) <= 50 && Math.abs(y_tap - y_pos) <= 50 && curMap == (FloorIdx.get(i) - 1)) {
                     tappedCode = i;
-                    vibrate.vibrate(100);
+                    if(isVibrationOn)
+                        vibrate.vibrate(100);
                     destTxt.setText("Destination: " + Locations.get(tappedCode));
-                    Toast showDest = Toast.makeText(MainActivity.this, "You have selected the " + Locations.get(tappedCode), Toast.LENGTH_SHORT);
-                    showDest.show();
+                    Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + Locations.get(tappedCode), Toast.LENGTH_SHORT);
+                    toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
+                    toast.show();
                     markMaps();
                     if(!samePoint) {
                         tappedCodePrev = i;
@@ -600,7 +728,7 @@ for each button press and perform the corresponding action.
 
         @Override
         public void onOutsidePhotoTap() {
-           // showToast("You have a tap event on the place where out of the photo.");
+            // showToast("You have a tap event on the place where out of the photo.");
         }
     }
 
