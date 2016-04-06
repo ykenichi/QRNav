@@ -60,6 +60,8 @@
             android:layout_height="wrap_content"
             android:layout_weight="2"
             android:textIsSelectable="true"
+            android:onClick="onClick"
+            android:clickable="true"
             android:text="@string/default_direction"
             android:gravity="center" />
 

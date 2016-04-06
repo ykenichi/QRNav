@@ -13,10 +13,12 @@ import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Point;
+import android.graphics.PointF;
 import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Vibrator;
 import android.speech.RecognizerIntent;
+import android.speech.tts.TextToSpeech;
 import android.support.v7.app.AppCompatActivity;
 import android.support.v7.widget.Toolbar;
 import android.util.Log;
@@ -47,6 +49,7 @@ import java.util.Map;
 import java.util.Set;
 
 
+import uk.co.senab.photoview.PhotoView;
 import uk.co.senab.photoview.PhotoViewAttacher;
 
 public class MainActivity extends AppCompatActivity implements OnClickListener {
@@ -57,10 +60,15 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     public static final int SPEECH_REQUEST_CODE = 123;
     public static final float mapScaleMeters = 0.05335f;
     public static final float mapScaleFeet = 0.175f;
+
+    private ArrayList<Path> route = new ArrayList<>();
+    private ArrayList<Integer> distances = new ArrayList<>();
+    private ArrayList<PointF> routePoints = new ArrayList<>();
     private Toolbar mainToolbar;
     private ImageButton mapButtonNext, mapButtonPrev, speechButton, scanButton, directionNext, directionPrev;
-    private TextView floorTxt, locationTxt, destTxt, directionText;
-    public AlertDialog.Builder locationsMenu;
+    private TextView locationTxt, destTxt, directionText;
+    private TextToSpeech tts;
+    public AlertDialog.Builder destinationsMenu, startPointMenu;
     private Toast toastError, toastSuccess;
     private ImageView floorMap;
     private PhotoViewAttacher fAttacher;
@@ -86,6 +94,9 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     private boolean samePoint = false;
     private boolean isMatch = false;
     private boolean isMetric = false;
+    private boolean isSpeechOn = true;
+    private boolean curPath = false;
+    private boolean sayDest = false;
     private int x_tap,y_tap;
     private Matrix prevZoom;
 
@@ -130,9 +141,9 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         loadCheckpoints();
 
         // Set our custom ImageViewTouch element to display the current map element and mark the maps.
-        markMaps();
-
         loadNodeCoords();
+
+        markMaps();
 
         loadGraphs();
 
@@ -145,18 +156,50 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         directionPrev.setOnClickListener(this);
         fAttacher.setOnPhotoTapListener(new PhotoTapListener());
 
+        tts = new TextToSpeech(MainActivity.this, new TextToSpeech.OnInitListener() {
+            @Override
+            public void onInit(int status) {
+                if(status == TextToSpeech.SUCCESS){
+                    int result = tts.setLanguage(Locale.US);
+                    if(result==TextToSpeech.LANG_MISSING_DATA || result==TextToSpeech.LANG_NOT_SUPPORTED){
+                        Log.e(TAG, "Error: Language is not supported");
+                    }
+                }
+                else
+                    Log.e(TAG, "TextToSpeech Initialization failed!");
+            }
+        });
+
         CharSequence selectLocations[] = Locations.toArray(new CharSequence[Locations.size()]);
-        locationsMenu = new AlertDialog.Builder(this);
-        locationsMenu.setTitle("Choose a Destination");
-        locationsMenu.setItems(selectLocations, new DialogInterface.OnClickListener() {
+        destinationsMenu = new AlertDialog.Builder(this);
+        destinationsMenu.setTitle("Choose a Destination");
+        destinationsMenu.setItems(selectLocations, new DialogInterface.OnClickListener() {
             @Override
             public void onClick(DialogInterface dialog, int which) {
-                String location = Locations.get(which).replaceAll("_", " ");
+                String location = Locations.get(which);
                 destTxt.setText("Destination: " + location);
-                if(isVibrationOn)
+                if (isVibrationOn)
                     vibrate.vibrate(100);
                 tappedCode = which;
                 Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT);
+                if(lastScan < 0)
+                    speakDirections(2);
+                toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, 0);
+                toast.show();
+                markMaps();
+            }
+        });
+        startPointMenu = new AlertDialog.Builder(this);
+        startPointMenu.setTitle("Choose a Starting Point");
+        startPointMenu.setItems(selectLocations, new DialogInterface.OnClickListener() {
+            @Override
+            public void onClick(DialogInterface dialog, int which) {
+                String location = Locations.get(which);
+                locationTxt.setText("Last scanned location: " + location);
+                if(isVibrationOn)
+                    vibrate.vibrate(250);
+                lastScan = which;
+                Toast toast = Toast.makeText(MainActivity.this, "Start location set to " + location, Toast.LENGTH_SHORT);
                 toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
                 toast.show();
                 markMaps();
@@ -169,11 +212,32 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         curMap = 0;
         tappedCode = -1;
         tappedCodePrev = -2;
+        listDirections.clear();
+        distances.clear();
+        route.clear();
+        isVibrationOn = true;
+        samePoint = false;
+        isMatch = false;
+        isMetric = false;
+        isSpeechOn = true;
+        invalidateOptionsMenu();
         //floorTxt.setText("NAC Building Floor 1");
         getSupportActionBar().setTitle(R.string.default_floor);
-        locationTxt.setText("Please scan a QR code");
-        destTxt.setText("Destination: None");
+        locationTxt.setText(R.string.default_source);
+        destTxt.setText(R.string.default_destination);
+        directionText.setText(R.string.default_direction);
         markMaps();
+    }
+
+    private void showNodes(int floorIdx, Canvas canvas, Paint paint){
+        int prevColor = paint.getColor();
+        paint.setColor(Color.rgb(255,69,0));
+        paint.setTextSize(20f);
+        for(int i = 0; i < nodePoints.get(floorIdx).size(); i++){
+            canvas.drawCircle(nodePoints.get(floorIdx).get(i).x,nodePoints.get(floorIdx).get(i).y,5,paint);
+            canvas.drawText(String.valueOf(i),nodePoints.get(floorIdx).get(i).x,nodePoints.get(floorIdx).get(i).y - 10,paint);
+        }
+        paint.setColor(prevColor);
     }
 
     /*
@@ -194,6 +258,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             paint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
             int width = floors.get(i).getWidth();
             int height = floors.get(i).getHeight();
+
             canvas.drawText("Destination", width - 300, height - 35, paint);
             canvas.drawCircle(width - 325, height - 50, 20, paint);
             paint.setColor(Color.RED);
@@ -202,6 +267,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             paint.setColor(Color.BLUE);
             canvas.drawText("QR Code", width - 300, height - 135, paint);
             canvas.drawCircle(width - 325, height - 150, 20, paint);
+            //showNodes(i,canvas,paint);
         }
         floorMap.setImageBitmap(floors.get(curMap));
         fAttacher.update();
@@ -319,7 +385,6 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
 
         // Reset the map view (default zoom/pan) and reload the floor bitmaps.
         //floorMap.resetMatrix();
-        //fAttacher.
         loadFloors();
 
         // Iterate through all of the registered QR codes and mark them on the map.
@@ -372,15 +437,27 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 }
                 Log.i(TAG, "Path Found is: " + path.toString());
                 listDirections.clear();
-                curDirection = 0;
-                drawPath(floor, path, paint, canvas);
+                if(!curPath)
+                    curDirection = 0;
+                drawPath(floor, path,canvas,paint);
+                //markCurrentPath();
                 directionText.setText(listDirections.get(curDirection));
+                speakDirections(1);
                 isMatch = false;
             }
         }
     }
 
-    private void drawPath(int floor, ArrayList<Integer> path, Paint paint, Canvas canvas){
+    private void drawPath(int floor, ArrayList<Integer> path, Canvas canvas, Paint paint){
+        route.clear();
+        distances.clear();
+        String unit;
+        if(isMetric){
+            unit = "meters";
+        }
+        else
+            unit = "feet";
+
         int start_x = nodePoints.get(floor).get(path.get(0)).x;
         int start_y = nodePoints.get(floor).get(path.get(0)).y;
         int end_x,end_y;
@@ -402,26 +479,49 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             if(slope_1 != slope_2){
                 end_x = cur_x;
                 end_y = cur_y;
-                canvas.drawLine((float)start_x,(float)start_y,(float)end_x,(float)end_y,paint);
-                fillArrow(canvas,(float)start_x,(float)start_y,(float)end_x,(float)end_y);
-                listDirections.add("Please walk " + getDIstance(start_x, start_y, end_x, end_y) + " " + getDirection(start_x, start_y, end_x, end_y));
+                routePoints.add(new PointF((float)start_x, (float)start_y));
+                Path temppath = new Path();
+                temppath.moveTo((float) start_x, (float) start_y);
+                temppath.lineTo((float) end_x, (float) end_y);
+                route.add(temppath);
+                //canvas.drawLine((,(float)end_x,(float)end_y,paint);
+                //fillArrow(canvas,(float)start_x,(float)start_y,(float)end_x,(float)end_y);
+                listDirections.add("Please walk " + getDIstance(start_x, start_y, end_x, end_y) + " " + unit + " " + getDirection(start_x, start_y, end_x, end_y));
+                distances.add(getDIstance(start_x, start_y, end_x, end_y));
                 start_x = end_x;
                 start_y = end_y;
             }
         }
         end_x = nodePoints.get(floor).get(path.get(path.size() - 1)).x;
         end_y = nodePoints.get(floor).get(path.get(path.size() - 1)).y;
-        canvas.drawLine((float)start_x,(float)start_y,(float)end_x,(float)end_y,paint);
+        //canvas.drawLine((float)start_x,(float)start_y,(float)end_x,(float)end_y,paint);
+        Path temppath = new Path();
+        temppath.moveTo((float)start_x,(float)start_y);
+        temppath.lineTo((float) end_x, (float) end_y);
+        route.add(temppath);
+        routePoints.add(new PointF((float) start_x, (float) start_y));
+        routePoints.add(new PointF((float) end_x, (float) end_y));
+        for(int i = 0; i < route.size(); i++) {
+            if((curPath && i == curDirection) || (curDirection == i && i == 0)){
+                paint.setColor(Color.CYAN);
+                canvas.drawPath(route.get(i),paint);
+                paint.setColor(Color.RED);
+                continue;
+            }
+            canvas.drawPath(route.get(i), paint);
+        }
         fillArrow(canvas, (float) start_x, (float) start_y, (float) end_x, (float) end_y);
-        listDirections.add("Please walk " + getDIstance(start_x, start_y, end_x, end_y) + " " + getDirection(start_x, start_y, end_x, end_y));
+        listDirections.add("Please walk " + getDIstance(start_x, start_y, end_x, end_y) + " " + unit + " " + getDirection(start_x, start_y, end_x, end_y));
+        distances.add(getDIstance(start_x, start_y, end_x, end_y));
+        listDirections.add("Arrived at the " + Locations.get(tappedCode));
     }
 
-    private String getDIstance(int x1, int y1, int x2, int y2){
+    private int getDIstance(int x1, int y1, int x2, int y2){
         double distanceInPixels = Math.sqrt(Math.pow((double)(x2 - x1),2) + Math.pow((double)(y2 - y1),2));
         if(isMetric)
-            return (int)(distanceInPixels*mapScaleMeters) + " meters";
+            return (int)(distanceInPixels*mapScaleMeters);
         else
-            return (int)(distanceInPixels*mapScaleFeet) + " feet";
+            return (int)(distanceInPixels*mapScaleFeet);
     }
 
     private String getDirection(int x1, int y1, int x2, int y2){
@@ -454,13 +554,17 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
 
     private void fillArrow(Canvas canvas, float x0, float y0, float x1, float y1) {
         Paint paint = new Paint();
-        paint.setColor(Color.RED);
+        if(curDirection == listDirections.size() + 1)
+            paint.setColor(Color.CYAN);
+        else
+            paint.setColor(Color.RED);
+
         paint.setStyle(Paint.Style.FILL);
 
         float deltaX = x1 - x0;
         float deltaY = y1 - y0;
         double distance = Math.sqrt((deltaX * deltaX) + (deltaY * deltaY));
-        float frac = (float) (1 / (distance / 20));
+        float frac = (float) (1 / (distance / 30));
 
         float point_x_1 = x0 + (float) ((1 - frac) * deltaX + frac * deltaY);
         float point_y_1 = y0 + (float) ((1 - frac) * deltaY - frac * deltaX);
@@ -483,6 +587,29 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
 
         canvas.drawPath(path, paint);
     }
+
+/*    private void markCurrentPath(){
+        if(route.size() > 0 && curDirection < route.size()){
+            paint.setColor(Color.RED);
+            Paint current_path = new Paint();
+            current_path.setColor(Color.CYAN);
+            current_path.setStyle(Paint.Style.STROKE);
+            current_path.setStrokeWidth(20);
+            Path curPath = route.get(curDirection);
+            Log.i(TAG, "Curdirection: " + curDirection);
+            ///canvas.drawPath(curPath,current_path);
+            for(int i = 0; i < route.size(); i++){
+                if(i == curDirection){
+                    paint.setColor(Color.CYAN);
+                    canvas.drawPath(route.get(i),paint);
+                    continue;
+                }
+                paint.setColor(Color.RED);
+                canvas.drawPath(route.get(i), paint);
+            }
+            canvas.drawLine(routePoints.get(curDirection).x,routePoints.get(curDirection).y,routePoints.get(curDirection + 1).x,routePoints.get(curDirection + 1).y,current_path);
+        }
+    }*/
 
     /*
     onClick(View v) - This function is called whenever one of the buttons are pressed.
@@ -520,14 +647,39 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             if(curDirection == listDirections.size() - 1 || listDirections.size() == 0)
                 return;
             directionText.setText(listDirections.get(++curDirection));
+            //markCurrentPath();
+            curPath = true;
+            markMaps();
+            curPath = false;
+            speakDirections(1);
         }
         if(v.getId() == R.id.direction_button_prev){
             if(curDirection == 0)
                 return;
             directionText.setText(listDirections.get(--curDirection));
+            //markCurrentPath();
+            curPath = true;
+            markMaps();
+            curPath = false;
+            speakDirections(1);
+        }
+        if(v.getId() == R.id.direction_text){
+            speakDirections(1);
         }
         //floorTxt.setText("NAC Building Floor " + (curMap + 1));
         getSupportActionBar().setTitle("NAC Building Floor " + (curMap + 1));
+    }
+
+    private void speakDirections(int select){
+        if(isSpeechOn) {
+            if (listDirections.size() > 0 && select == 1)
+                tts.speak(listDirections.get(curDirection), TextToSpeech.QUEUE_FLUSH, null);
+            //else
+             //   tts.speak("No directions have been obtained. Please scan a QR code.", TextToSpeech.QUEUE_ADD, null);
+
+            if(select == 2)
+                tts.speak("You have selected the " + Locations.get(tappedCode), TextToSpeech.QUEUE_FLUSH, null);
+        }
     }
 
     private void promptSpeechInput() {
@@ -600,8 +752,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             case SPEECH_REQUEST_CODE:
                 if(resultCode == RESULT_OK && intent != null){
                     ArrayList<String> speechResult = intent.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
-                    if(speechResult.get(0).length() > 6)
-                        Log.i(TAG,speechResult.get(0).substring(6));
+                    Log.i(TAG,speechResult.get(0));
 
                     for(int i = 0; i < Locations.size(); i++){
                         String location = Locations.get(i);
@@ -612,17 +763,9 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                                 vibrate.vibrate(100);
                             tappedCode = i;
                             Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT);
+                            speakDirections(2);
                             toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
                             toast.show();
-                            markMaps();
-                            return;
-                        }
-                        if(result_location.toLowerCase().startsWith("start") && location.equalsIgnoreCase(result_location.substring(6))){
-                            if(isVibrationOn)
-                                vibrate.vibrate(500);
-                            Log.i(TAG, "Found a match!");
-                            lastScan = i;
-                            isMatch = true;
                             markMaps();
                             return;
                         }
@@ -633,32 +776,13 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         }
     }
 
-    private void chooseLocation(){
-        CharSequence selectLocations[] = new CharSequence[Locations.size()];
-        AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Choose a Destination");
-        builder.setItems(selectLocations, new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
-                String location = Locations.get(which);
-                destTxt.setText("Destination: " + location);
-                if(isVibrationOn)
-                    vibrate.vibrate(100);
-                tappedCode = which;
-                Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT);
-                toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
-                toast.show();
-                markMaps();
-            }
-        });
-    }
-
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         // Inflate the menu; this adds items to the action bar if it is present.
         getMenuInflater().inflate(R.menu.menu_main, menu);
         menu.findItem(R.id.action_vibration).setChecked(true);
         menu.findItem(R.id.action_units).setChecked(false);
+        menu.findItem(R.id.action_speak).setChecked(true);
         return true;
     }
 
@@ -673,7 +797,10 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 resetAll();
                 return true;
             case R.id.action_locations:
-                locationsMenu.show();
+                destinationsMenu.show();
+                return true;
+            case R.id.action_source:
+                startPointMenu.show();
                 return true;
             case R.id.action_vibration:
                 if(item.isChecked()) {
@@ -684,6 +811,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                     item.setChecked(true);
                     isVibrationOn = true;
                 }
+                return true;
             case R.id.action_units:
                 if(item.isChecked()) {
                     item.setChecked(false);
@@ -693,6 +821,17 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                     item.setChecked(true);
                     isMetric = true;
                 }
+                return true;
+            case R.id.action_speak:
+                if(item.isChecked()) {
+                    item.setChecked(false);
+                    isSpeechOn = false;
+                }
+                else{
+                    item.setChecked(true);
+                    isSpeechOn = true;
+                }
+                return true;
         }
         return super.onOptionsItemSelected(item);
     }
@@ -713,13 +852,16 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                         vibrate.vibrate(100);
                     destTxt.setText("Destination: " + Locations.get(tappedCode));
                     Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + Locations.get(tappedCode), Toast.LENGTH_SHORT);
-                    toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
+                    if(lastScan < 0)
+                        speakDirections(2);
+                    toast.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL, 0, 0);
                     toast.show();
                     markMaps();
                     if(!samePoint) {
                         tappedCodePrev = i;
                         samePoint = false;
                     }
+                    break;
                 }
             }
             //Toast showPos = Toast.makeText(MainActivity.this, "x: " + x_tap + "  y: " + y_tap, Toast.LENGTH_SHORT);

@@ -8,9 +8,11 @@
     <string name="image_text">Scanned QR Code</string>
     <string name="speech_prompt">Please say your destination</string>
     <string name="speech_not_supported">Sorry, your device does not support speech</string>
-    <string name="action_locations">Locations</string>
+    <string name="action_locations">Set Destination</string>
+    <string name="action_source">Set Start</string>
     <string name="action_vibration">Enable Vibration</string>
     <string name="action_units">Use Metric</string>
+    <string name="action_speak">Enable Speech</string>
     <string name="default_source">Please scan a QR code</string>
     <string name="default_destination">Destination: None</string>
     <string name="default_floor">NAC Building Floor 1</string>
