@@ -32,4 +32,9 @@
         android:title="@string/action_units"
         android:orderInCategory="1"
         android:checkable="true" />
+    <item
+        android:id="@+id/action_escalator"
+        android:title="@string/action_escalator"
+        android:orderInCategory="0"
+        android:checkable="true" />
 </menu>

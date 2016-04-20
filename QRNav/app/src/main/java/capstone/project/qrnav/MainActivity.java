@@ -96,9 +96,12 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
     private boolean isMetric = false;
     private boolean isSpeechOn = true;
     private boolean curPath = false;
+    private boolean useEscalator = false;
     private boolean sayDest = false;
     private int x_tap,y_tap;
     private Matrix prevZoom;
+    private int[] elevatorNodes;
+    private int[] escalatorNodes;
 
     /*
     onCreate - This function is called at the program start. Some of our global variables and our UI elements are initialized here.
@@ -136,6 +139,8 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         // Get an array of IDs that correspond to each floorplan bitmap in the drawable folder (the name of the drawable is the filename w/o the extension)
         imgArray = new int[] {R.drawable.floor_1c, R.drawable.floor_2b, R.drawable.floor_3b, R.drawable.floor_4c,
                 R.drawable.floor_5a, R.drawable.floor_6a, R.drawable.floor_7c, R.drawable.floor_8c};
+        elevatorNodes = new int[] {58, 18, 13, 20, 46, 61, 16, 16};
+        escalatorNodes = new int[] {16, 6, 3, 2, 46, 61, 16, 16};
 
         // Load all of the checkpoint (QR code) data from the checkpoints.txt file in the assets folder.
         loadCheckpoints();
@@ -178,8 +183,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             public void onClick(DialogInterface dialog, int which) {
                 String location = Locations.get(which);
                 destTxt.setText("Destination: " + location);
-                if (isVibrationOn)
-                    vibrate.vibrate(100);
+                vibratePhone(100);
                 tappedCode = which;
                 Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT);
                 if(lastScan < 0)
@@ -196,8 +200,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             public void onClick(DialogInterface dialog, int which) {
                 String location = Locations.get(which);
                 locationTxt.setText("Last scanned location: " + location);
-                if(isVibrationOn)
-                    vibrate.vibrate(250);
+                vibratePhone(500);
                 lastScan = which;
                 Toast toast = Toast.makeText(MainActivity.this, "Start location set to " + location, Toast.LENGTH_SHORT);
                 toast.setGravity(Gravity.TOP|Gravity.CENTER_HORIZONTAL,0,0);
@@ -267,7 +270,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
             paint.setColor(Color.BLUE);
             canvas.drawText("QR Code", width - 300, height - 135, paint);
             canvas.drawCircle(width - 325, height - 150, 20, paint);
-            //showNodes(i,canvas,paint);
+            showNodes(i, canvas, paint);
         }
         floorMap.setImageBitmap(floors.get(curMap));
         fAttacher.update();
@@ -420,37 +423,69 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 tappedCodePrev = -2;
                 samePoint = true;
             }
-            if (tappedCode >= 0 && lastScan >= 0 && FloorIdx.get(tappedCode) == FloorIdx.get(lastScan) && i == tappedCode && tappedCode != lastScan) {
-                paint.setColor(Color.RED);
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(10);
+            if (tappedCode >= 0 && lastScan >= 0 &&  i == tappedCode && tappedCode != lastScan) {
+                if(FloorIdx.get(tappedCode) == FloorIdx.get(lastScan)) {
+                    paint.setColor(Color.RED);
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setStrokeWidth(10);
 
-                int source = NodeIdx.get(lastScan);
-                int destination = NodeIdx.get(tappedCode);
-                int floor = FloorIdx.get(lastScan) - 1;
-                floorGraph.get(floor).execute(nodeArray.get(floor).get(source));
-                //ArrayList<Integer> path = floorGraph.get(0).getPathIndices(nodeArray.get(0).get(destination));
-                ArrayList<Integer> path = floorGraph.get(floor).getPathIndices(nodeArray.get(floor).get(destination));
-                if(path == null) {
-                    Log.e(TAG, "Error: no path found");
-                    return;
+                    int source = NodeIdx.get(lastScan);
+                    int destination = NodeIdx.get(tappedCode);
+                    int floor = FloorIdx.get(lastScan) - 1;
+                    floorGraph.get(floor).execute(nodeArray.get(floor).get(source));
+                    //ArrayList<Integer> path = floorGraph.get(0).getPathIndices(nodeArray.get(0).get(destination));
+                    ArrayList<Integer> path = floorGraph.get(floor).getPathIndices(nodeArray.get(floor).get(destination));
+                    if (path == null) {
+                        Log.e(TAG, "Error: no path found");
+                        return;
+                    }
+                    Log.i(TAG, "Path Found is: " + path.toString());
+                    listDirections.clear();
+                    if (!curPath)
+                        curDirection = 0;
+                    drawPath(floor, path, canvas, paint);
+                    //markCurrentPath();
+                    directionText.setText(listDirections.get(curDirection));
+                    speakDirections(1);
+                    isMatch = false;
                 }
-                Log.i(TAG, "Path Found is: " + path.toString());
-                listDirections.clear();
-                if(!curPath)
-                    curDirection = 0;
-                drawPath(floor, path,canvas,paint);
-                //markCurrentPath();
-                directionText.setText(listDirections.get(curDirection));
-                speakDirections(1);
-                isMatch = false;
+                else{
+                        paint.setColor(Color.RED);
+                        paint.setStyle(Paint.Style.STROKE);
+                        paint.setStrokeWidth(10);
+
+                        int source = NodeIdx.get(lastScan);
+                        int destination = NodeIdx.get(tappedCode);
+                        int sourcefloor = FloorIdx.get(lastScan) - 1;
+                        int destfloor = FloorIdx.get(tappedCode) - 1;
+
+                        floorGraph.get(sourcefloor).execute(nodeArray.get(sourcefloor).get(source));
+                        ArrayList<Integer> path1 = floorGraph.get(sourcefloor).getPathIndices(nodeArray.get(sourcefloor).get(elevatorNodes[sourcefloor]));
+                        floorGraph.get(destfloor).execute(nodeArray.get(destfloor).get(destination));
+                        ArrayList<Integer> path2 = floorGraph.get(destfloor).getPathIndices(nodeArray.get(destfloor).get(elevatorNodes[destfloor]));
+                        if (path1 == null && path2 == null) {
+                            Log.e(TAG, "Error: no path found");
+                            return;
+                        }
+                       //Log.i(TAG, "Path Found is: " + path.toString());
+                        listDirections.clear();
+                        if (!curPath)
+                            curDirection = 0;
+                        route.clear();
+                        distances.clear();
+                        drawPath(sourcefloor, path1, canvas, paint);
+                        drawPath(destfloor,path2,canvas,paint);
+                        //markCurrentPath();
+                        directionText.setText(listDirections.get(curDirection));
+                        speakDirections(1);
+                        isMatch = false;
+                        return;
+                }
             }
         }
     }
 
     private void drawPath(int floor, ArrayList<Integer> path, Canvas canvas, Paint paint){
-        route.clear();
-        distances.clear();
         String unit;
         if(isMetric){
             unit = "meters";
@@ -670,6 +705,11 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         getSupportActionBar().setTitle("NAC Building Floor " + (curMap + 1));
     }
 
+    private void vibratePhone(int ms){
+        if(isVibrationOn)
+            vibrate.vibrate(ms);
+    }
+
     private void speakDirections(int select){
         if(isSpeechOn) {
             if (listDirections.size() > 0 && select == 1)
@@ -725,8 +765,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                         }
                         // Match is found, vibrate the device and mark the map with the scanned qr code.
                         if (foundMatch) {
-                            if(isVibrationOn)
-                                vibrate.vibrate(500);
+                            vibratePhone(500);
                             Log.i(TAG, "Found a match!");
                             lastScan = index;
                             isMatch = true;
@@ -759,8 +798,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                         String result_location = speechResult.get(0);
                         if(location.equalsIgnoreCase(result_location)) {
                             destTxt.setText("Destination: " + location);
-                            if(isVibrationOn)
-                                vibrate.vibrate(100);
+                            vibratePhone(100);
                             tappedCode = i;
                             Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + location, Toast.LENGTH_SHORT);
                             speakDirections(2);
@@ -783,6 +821,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
         menu.findItem(R.id.action_vibration).setChecked(true);
         menu.findItem(R.id.action_units).setChecked(false);
         menu.findItem(R.id.action_speak).setChecked(true);
+        menu.findItem(R.id.action_escalator).setChecked(false);
         return true;
     }
 
@@ -832,6 +871,16 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                     isSpeechOn = true;
                 }
                 return true;
+            case R.id.action_escalator:
+                if(item.isChecked()){
+                    item.setChecked(false);
+                    useEscalator = false;
+                }
+                else{
+                    item.setChecked(true);
+                    useEscalator = true;
+                }
+                return true;
         }
         return super.onOptionsItemSelected(item);
     }
@@ -848,8 +897,7 @@ public class MainActivity extends AppCompatActivity implements OnClickListener {
                 int y_pos = yCoords.get(i);
                 if (Math.abs(x_tap - x_pos) <= 50 && Math.abs(y_tap - y_pos) <= 50 && curMap == (FloorIdx.get(i) - 1)) {
                     tappedCode = i;
-                    if(isVibrationOn)
-                        vibrate.vibrate(100);
+                    vibratePhone(100);
                     destTxt.setText("Destination: " + Locations.get(tappedCode));
                     Toast toast = Toast.makeText(MainActivity.this, "You have selected the " + Locations.get(tappedCode), Toast.LENGTH_SHORT);
                     if(lastScan < 0)

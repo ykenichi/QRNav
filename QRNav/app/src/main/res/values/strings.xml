@@ -12,6 +12,7 @@
     <string name="action_source">Set Start</string>
     <string name="action_vibration">Enable Vibration</string>
     <string name="action_units">Use Metric</string>
+    <string name="action_escalator">Use Escalator</string>
     <string name="action_speak">Enable Speech</string>
     <string name="default_source">Please scan a QR code</string>
     <string name="default_destination">Destination: None</string>
